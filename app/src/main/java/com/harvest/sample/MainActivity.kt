@@ -66,9 +66,13 @@ class MainActivity : ComponentActivity() {
 				onTogglePlay = viewModel::togglePlay,
 				onSave = viewModel::saveSelection,
 				onSeek = viewModel::seekTo,
-				onSelectionChanged = viewModel::setSelection,
+				onSelectionChanged = { a, b -> viewModel.setSelection(a, b, audition = true) },
 				onAudition = viewModel::auditionSelection,
 				onToggleSample = viewModel::toggleSample,
+				onMarkIn = viewModel::markIn,
+				onMarkOut = viewModel::markOut,
+				onJumpBack = viewModel::jumpBack,
+				onToggleZoom = viewModel::toggleZoom,
 			)
 		}
 	}
