@@ -99,8 +99,9 @@ object WavReader {
 					}
 				}
 
+				// Advance to the next chunk (pad odd-sized chunks).
 				val next = chunkStart + chunkSize + (chunkSize % 2)
-				if (next <= raf.filePointer) break
+				if (next < raf.filePointer || next >= raf.length()) break
 				raf.seek(next)
 			}
 
