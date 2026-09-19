@@ -35,7 +35,8 @@ Output: `app/build/outputs/apk/debug/app-debug.apk`
 If `gradle/wrapper/gradle-wrapper.jar` is missing after clone:
 
 ```bash
-gradle wrapper --gradle-version 8.7
+./bootstrap-wrapper.sh
+# or: gradle wrapper --gradle-version 8.7
 ```
 
 ## Target
