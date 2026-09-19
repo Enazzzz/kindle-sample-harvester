@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,7 +36,6 @@ private val Ink = Color(0xFFE7EDF5)
 private val InkDim = Color(0xFF8B97A8)
 private val Accent = Color(0xFF7EC8E3)
 private val ButtonFill = Color(0xFF1B222C)
-private val ButtonStroke = Color(0xFF2C3644)
 
 /**
  * Root dark appliance chrome hosting harvest + samples screens.
@@ -52,6 +52,10 @@ fun HarvesterApp(
 	onSelectionChanged: (Double, Double) -> Unit,
 	onAudition: () -> Unit,
 	onToggleSample: (String) -> Unit,
+	onMarkIn: () -> Unit,
+	onMarkOut: () -> Unit,
+	onJumpBack: () -> Unit,
+	onToggleZoom: () -> Unit,
 ) {
 	val brush = Brush.verticalGradient(listOf(BgTop, BgBottom))
 	Box(
@@ -69,6 +73,10 @@ fun HarvesterApp(
 				onSeek = onSeek,
 				onSelectionChanged = onSelectionChanged,
 				onAudition = onAudition,
+				onMarkIn = onMarkIn,
+				onMarkOut = onMarkOut,
+				onJumpBack = onJumpBack,
+				onToggleZoom = onToggleZoom,
 			)
 			Screen.Samples -> SamplesScreen(
 				state = state,
@@ -104,11 +112,17 @@ private fun HarvestScreen(
 	onSeek: (Double) -> Unit,
 	onSelectionChanged: (Double, Double) -> Unit,
 	onAudition: () -> Unit,
+	onMarkIn: () -> Unit,
+	onMarkOut: () -> Unit,
+	onJumpBack: () -> Unit,
+	onToggleZoom: () -> Unit,
 ) {
+	val (viewStart, viewEnd) = state.viewWindow()
+
 	Column(
 		modifier = Modifier
 			.fillMaxSize()
-			.padding(horizontal = 28.dp, vertical = 20.dp)
+			.padding(horizontal = 24.dp, vertical = 18.dp)
 	) {
 		Row(
 			modifier = Modifier.fillMaxWidth(),
@@ -116,26 +130,29 @@ private fun HarvestScreen(
 			verticalAlignment = Alignment.CenterVertically,
 		) {
 			TopLink("Open", onOpen)
+			TopLink(if (state.zoomed) "Full" else "Zoom", onToggleZoom)
 			TopLink("Samples", onShowSamples)
 		}
 
-		Spacer(Modifier.height(18.dp))
+		Spacer(Modifier.height(14.dp))
 
 		Text(
 			text = state.sourceName,
 			color = Ink,
-			fontSize = 34.sp,
+			fontSize = 30.sp,
 			fontWeight = FontWeight.SemiBold,
-			maxLines = 2,
+			maxLines = 1,
 			overflow = TextOverflow.Ellipsis,
 			modifier = Modifier.fillMaxWidth(),
 		)
 
-		Spacer(Modifier.height(22.dp))
+		Spacer(Modifier.height(14.dp))
 
 		WaveformView(
 			peaks = state.peaks,
 			durationSeconds = state.durationSeconds,
+			viewStart = viewStart,
+			viewEnd = viewEnd,
 			positionSeconds = state.positionSeconds,
 			selectionStart = state.selectionStart,
 			selectionEnd = state.selectionEnd,
@@ -145,40 +162,58 @@ private fun HarvestScreen(
 			modifier = Modifier.fillMaxWidth(),
 		)
 
-		Spacer(Modifier.height(14.dp))
+		Spacer(Modifier.height(12.dp))
 
+		// Mark in/out while listening — faster than precise dragging on long files.
 		Row(
 			modifier = Modifier.fillMaxWidth(),
 			horizontalArrangement = Arrangement.SpaceBetween,
+			verticalAlignment = Alignment.CenterVertically,
 		) {
-			TimeLabel(
-				if (state.selectionStart != null) formatTime(state.selectionStart)
-				else formatTime(state.positionSeconds)
-			)
-			TimeLabel(
-				if (state.selectionEnd != null) formatTime(state.selectionEnd)
-				else formatTime(state.durationSeconds)
-			)
+			MarkButton("IN", onMarkIn)
+			Column(horizontalAlignment = Alignment.CenterHorizontally) {
+				TimeLabel(
+					if (state.selectionStart != null) formatTime(state.selectionStart)
+					else formatTime(state.positionSeconds)
+				)
+				TimeLabel(
+					if (state.selectionEnd != null) formatTime(state.selectionEnd)
+					else formatTime(if (state.zoomed) viewEnd else state.durationSeconds)
+				)
+			}
+			MarkButton("OUT", onMarkOut)
 		}
 
 		Spacer(Modifier.weight(1f))
 
-		BigButton(
-			label = if (state.isPlaying) "PAUSE" else "PLAY",
-			emphasized = true,
-			onClick = onTogglePlay,
-		)
+		// Transport row: back 2s · play · save — all in reach without stacking.
+		Row(
+			modifier = Modifier.fillMaxWidth(),
+			horizontalArrangement = Arrangement.spacedBy(12.dp),
+			verticalAlignment = Alignment.CenterVertically,
+		) {
+			BigButton(
+				label = "« 2s",
+				emphasized = false,
+				onClick = onJumpBack,
+				modifier = Modifier.width(110.dp),
+			)
+			BigButton(
+				label = if (state.isPlaying) "PAUSE" else "PLAY",
+				emphasized = true,
+				onClick = onTogglePlay,
+				modifier = Modifier.weight(1f),
+			)
+			BigButton(
+				label = "SAVE",
+				emphasized = false,
+				enabled = state.selectionStart != null && state.selectionEnd != null && !state.isBusy,
+				onClick = onSave,
+				modifier = Modifier.weight(1f),
+			)
+		}
 
-		Spacer(Modifier.height(16.dp))
-
-		BigButton(
-			label = "SAVE",
-			emphasized = false,
-			enabled = state.selectionStart != null && state.selectionEnd != null && !state.isBusy,
-			onClick = onSave,
-		)
-
-		Spacer(Modifier.height(12.dp))
+		Spacer(Modifier.height(10.dp))
 	}
 }
 
@@ -249,11 +284,31 @@ private fun TopLink(label: String, onClick: () -> Unit) {
 }
 
 @Composable
+private fun MarkButton(label: String, onClick: () -> Unit) {
+	Box(
+		modifier = Modifier
+			.width(96.dp)
+			.height(56.dp)
+			.background(ButtonFill, RoundedCornerShape(12.dp))
+			.clickable(onClick = onClick),
+		contentAlignment = Alignment.Center,
+	) {
+		Text(
+			text = label,
+			color = Accent,
+			fontSize = 22.sp,
+			fontWeight = FontWeight.SemiBold,
+			letterSpacing = 2.sp,
+		)
+	}
+}
+
+@Composable
 private fun TimeLabel(text: String) {
 	Text(
 		text = text,
 		color = InkDim,
-		fontSize = 20.sp,
+		fontSize = 18.sp,
 		fontFamily = FontFamily.Monospace,
 	)
 }
@@ -264,6 +319,7 @@ private fun BigButton(
 	emphasized: Boolean,
 	enabled: Boolean = true,
 	onClick: () -> Unit,
+	modifier: Modifier = Modifier,
 ) {
 	val bg = when {
 		!enabled -> ButtonFill.copy(alpha = 0.45f)
@@ -272,8 +328,7 @@ private fun BigButton(
 	}
 	val fg = if (enabled) Ink else InkDim
 	Box(
-		modifier = Modifier
-			.fillMaxWidth()
+		modifier = modifier
 			.height(72.dp)
 			.background(bg, RoundedCornerShape(14.dp))
 			.clickable(enabled = enabled, onClick = onClick),
@@ -282,9 +337,9 @@ private fun BigButton(
 		Text(
 			text = label,
 			color = fg,
-			fontSize = 28.sp,
+			fontSize = 24.sp,
 			fontWeight = FontWeight.SemiBold,
-			letterSpacing = 3.sp,
+			letterSpacing = 2.sp,
 		)
 	}
 }
