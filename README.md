@@ -14,19 +14,33 @@ Touch-first WAV sample harvester for Kindle Fire HD 10.
 
 Samples land in `/Samples/` on the SD card when available, otherwise internal shared storage.
 
-## Build
+Dark appliance UI. No naming prompts. No cloud. Tap a selection to audition it. Brief `saved sample_####` cue after each save.
+
+## Install on Fire HD 10
+
+1. On the Fire: **Settings → Security & Privacy → Apps from Unknown Sources** (enable for your file manager / browser)
+2. Copy `app-debug.apk` to the tablet (USB, email, or SD card)
+3. Open the APK and install
+4. Grant storage permission when asked
+5. **Open** a WAV → play → drag → **SAVE**
+
+Build the APK yourself:
 
 ```bash
 ./gradlew assembleDebug
 ```
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`
+Output: `app/build/outputs/apk/debug/app-debug.apk`
 
-Sideload onto the Fire HD 10 (Apps → install unknown apps allowed).
+If `gradle/wrapper/gradle-wrapper.jar` is missing after clone:
+
+```bash
+gradle wrapper --gradle-version 8.7
+```
 
 ## Target
 
 - Fire HD 10 (11th gen / Fire OS 7+, Android 9+)
 - minSdk 28
 - Offline only
-- WAV in / WAV out (no processing)
+- WAV in / WAV out (no processing, no normalization)
