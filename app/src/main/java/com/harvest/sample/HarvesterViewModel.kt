@@ -41,11 +41,42 @@ data class HarvestUiState(
 	val selectionStart: Double? = null,
 	val selectionEnd: Double? = null,
 	val isAuditioning: Boolean = false,
+	/** When true, waveform shows a ~30s window around the playhead. */
+	val zoomed: Boolean = false,
 	val samples: List<String> = emptyList(),
 	val playingSample: String? = null,
 	val statusMessage: String? = null,
 	val isBusy: Boolean = false,
-)
+) {
+	/**
+	 * Visible waveform time window.
+	 * Zoom centers on the selection midpoint when both edges exist, otherwise the playhead.
+	 */
+	fun viewWindow(spanSeconds: Double = ZOOM_SPAN_SECONDS): Pair<Double, Double> {
+		if (!zoomed || durationSeconds <= 0.0) return 0.0 to durationSeconds
+		val span = minOf(spanSeconds, durationSeconds)
+		val center = when {
+			selectionStart != null && selectionEnd != null ->
+				(selectionStart + selectionEnd) / 2.0
+			else -> positionSeconds
+		}
+		var start = center - span / 2.0
+		var end = center + span / 2.0
+		if (start < 0.0) {
+			end = (end - start).coerceAtMost(durationSeconds)
+			start = 0.0
+		}
+		if (end > durationSeconds) {
+			start = (start - (end - durationSeconds)).coerceAtLeast(0.0)
+			end = durationSeconds
+		}
+		return start to end
+	}
+
+	companion object {
+		const val ZOOM_SPAN_SECONDS = 30.0
+	}
+}
 
 /**
  * Coordinates loading, playback, selection, export, and session restore.
@@ -157,22 +188,27 @@ class HarvesterViewModel(app: Application) : AndroidViewModel(app) {
 		persistSession()
 	}
 
-	/** Replace the current selection with a new region in seconds. */
-	fun setSelection(start: Double, end: Double) {
+	/**
+	 * Replace the current selection with a new region in seconds.
+	 * @param audition when true, immediately play just that region.
+	 */
+	fun setSelection(start: Double, end: Double, audition: Boolean = true) {
 		val duration = _state.value.durationSeconds
 		val a = start.coerceIn(0.0, duration)
 		val b = end.coerceIn(0.0, duration)
 		if (kotlin.math.abs(b - a) < 0.01) {
 			_state.update { it.copy(selectionStart = null, selectionEnd = null) }
-		} else {
-			_state.update {
-				it.copy(
-					selectionStart = minOf(a, b),
-					selectionEnd = maxOf(a, b),
-				)
-			}
+			persistSession()
+			return
+		}
+		_state.update {
+			it.copy(
+				selectionStart = minOf(a, b),
+				selectionEnd = maxOf(a, b),
+			)
 		}
 		persistSession()
+		if (audition) auditionSelection()
 	}
 
 	/** Clear the selection. */
@@ -180,6 +216,55 @@ class HarvesterViewModel(app: Application) : AndroidViewModel(app) {
 		_state.update { it.copy(selectionStart = null, selectionEnd = null, isAuditioning = false) }
 		auditionEndSeconds = null
 		persistSession()
+	}
+
+	/** Toggle playhead-centered zoom for precise grabs on long recordings. */
+	fun toggleZoom() {
+		_state.update { it.copy(zoomed = !it.zoomed) }
+	}
+
+	/** Jump back a couple seconds — “I just heard something.” */
+	fun jumpBack(seconds: Double = 2.0) {
+		if (_state.value.sourcePath == null) return
+		seekTo(_state.value.positionSeconds - seconds)
+	}
+
+	/**
+	 * Mark selection start at the playhead while listening.
+	 * Keeps an existing end if it is still ahead of the playhead.
+	 */
+	fun markIn() {
+		if (_state.value.sourcePath == null) {
+			flash("Open a WAV")
+			return
+		}
+		val pos = _state.value.positionSeconds
+		val end = _state.value.selectionEnd
+		if (end != null && end > pos + 0.01) {
+			setSelection(pos, end, audition = false)
+		} else {
+			_state.update { it.copy(selectionStart = pos, selectionEnd = null, isAuditioning = false) }
+			auditionEndSeconds = null
+			persistSession()
+		}
+	}
+
+	/**
+	 * Mark selection end at the playhead, then audition.
+	 * If IN was never set, uses the previous 1 second.
+	 */
+	fun markOut() {
+		if (_state.value.sourcePath == null) {
+			flash("Open a WAV")
+			return
+		}
+		val pos = _state.value.positionSeconds
+		val start = _state.value.selectionStart
+		if (start != null && pos > start + 0.01) {
+			setSelection(start, pos, audition = true)
+		} else {
+			setSelection((pos - 1.0).coerceAtLeast(0.0), pos, audition = true)
+		}
 	}
 
 	/** Play only the selected region, then pause. */
@@ -192,7 +277,7 @@ class HarvesterViewModel(app: Application) : AndroidViewModel(app) {
 		_state.update { it.copy(isPlaying = true, isAuditioning = true, positionSeconds = start) }
 	}
 
-	/** Export the selection as the next sample_####.wav and keep playing. */
+	/** Export the selection as the next sample_####.wav and keep moving forward. */
 	fun saveSelection() {
 		val wav = source
 		val start = _state.value.selectionStart
@@ -206,7 +291,7 @@ class HarvesterViewModel(app: Application) : AndroidViewModel(app) {
 			return
 		}
 
-		val wasPlaying = player.isPlaying
+		val wasPlaying = player.isPlaying || _state.value.isAuditioning
 		viewModelScope.launch {
 			_state.update { it.copy(isBusy = true) }
 			try {
@@ -223,8 +308,21 @@ class HarvesterViewModel(app: Application) : AndroidViewModel(app) {
 				}
 				refreshSampleList()
 				flash("saved ${out.nameWithoutExtension}")
-				// Playback continues naturally after save.
-				if (wasPlaying && !player.isPlaying) player.play()
+				// Clear selection, park at the end of what we just took, keep listening.
+				auditionEndSeconds = null
+				_state.update {
+					it.copy(
+						selectionStart = null,
+						selectionEnd = null,
+						isAuditioning = false,
+					)
+				}
+				seekTo(end)
+				if (wasPlaying) {
+					player.play()
+					_state.update { it.copy(isPlaying = true) }
+				}
+				persistSession()
 			} catch (t: Throwable) {
 				flash("Couldn't save sample")
 			} finally {
@@ -278,7 +376,7 @@ class HarvesterViewModel(app: Application) : AndroidViewModel(app) {
 			seekTo(session.positionSeconds)
 			val a = session.selectionStart
 			val b = session.selectionEnd
-			if (a != null && b != null) setSelection(a, b)
+			if (a != null && b != null) setSelection(a, b, audition = false)
 		}
 	}
 
