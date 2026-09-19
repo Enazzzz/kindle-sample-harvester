@@ -35,6 +35,7 @@ private val Ink = Color(0xFFE7EDF5)
 private val InkDim = Color(0xFF8B97A8)
 private val Accent = Color(0xFF7EC8E3)
 private val ButtonFill = Color(0xFF1B222C)
+private val ButtonStroke = Color(0xFF2C3644)
 
 /**
  * Root dark appliance chrome hosting harvest + samples screens.
