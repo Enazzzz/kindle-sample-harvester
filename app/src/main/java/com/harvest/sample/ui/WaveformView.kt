@@ -25,11 +25,14 @@ import kotlin.math.min
 
 /**
  * Full-width touch waveform: tap seeks, drag selects, edge-drag adjusts.
+ * [viewStart]/[viewEnd] define the visible time window (full file or zoomed).
  */
 @Composable
 fun WaveformView(
 	peaks: FloatArray,
 	durationSeconds: Double,
+	viewStart: Double,
+	viewEnd: Double,
 	positionSeconds: Double,
 	selectionStart: Double?,
 	selectionEnd: Double?,
@@ -43,7 +46,7 @@ fun WaveformView(
 	val selectionEdge = Color(0xFF7EC8E3)
 	val playhead = Color(0xFFE8EEF5)
 	val bg = Color(0xFF14181F)
-	val edgeHitDp = 28.dp
+	val edgeHitDp = 36.dp
 	val density = LocalDensity.current
 	val edgeHitPx = with(density) { edgeHitDp.toPx() }
 
@@ -53,22 +56,26 @@ fun WaveformView(
 
 	val drawStart = draftStart ?: selectionStart
 	val drawEnd = draftEnd ?: selectionEnd
+	val windowStart = viewStart.coerceAtLeast(0.0)
+	val windowEnd = viewEnd.coerceAtLeast(windowStart + 0.001)
+	val windowSpan = windowEnd - windowStart
 
 	fun xToSeconds(x: Float, width: Float): Double {
-		if (width <= 0f || durationSeconds <= 0.0) return 0.0
-		return (x / width).toDouble().coerceIn(0.0, 1.0) * durationSeconds
+		if (width <= 0f) return windowStart
+		val t = (x / width).toDouble().coerceIn(0.0, 1.0)
+		return (windowStart + t * windowSpan).coerceIn(0.0, durationSeconds)
 	}
 
 	fun secondsToX(seconds: Double, width: Float): Float {
-		if (durationSeconds <= 0.0) return 0f
-		return ((seconds / durationSeconds) * width).toFloat()
+		val t = ((seconds - windowStart) / windowSpan).toFloat()
+		return (t * width)
 	}
 
 	Canvas(
 		modifier = modifier
 			.fillMaxWidth()
-			.height(220.dp)
-			.pointerInput(durationSeconds, selectionStart, selectionEnd) {
+			.height(260.dp)
+			.pointerInput(durationSeconds, windowStart, windowEnd, selectionStart, selectionEnd) {
 				detectTapGestures { offset ->
 					val width = size.width.toFloat()
 					val seconds = xToSeconds(offset.x, width)
@@ -81,7 +88,7 @@ fun WaveformView(
 					}
 				}
 			}
-			.pointerInput(durationSeconds, selectionStart, selectionEnd) {
+			.pointerInput(durationSeconds, windowStart, windowEnd, selectionStart, selectionEnd) {
 				detectDragGestures(
 					onDragStart = { offset ->
 						val width = size.width.toFloat()
@@ -144,24 +151,39 @@ fun WaveformView(
 		val h = size.height
 		val mid = h / 2f
 		val count = peaks.size.coerceAtLeast(1)
-		val step = w / count
+
+		// Map peak buckets that fall inside the visible window.
+		val startFrac = if (durationSeconds > 0) (windowStart / durationSeconds).toFloat() else 0f
+		val endFrac = if (durationSeconds > 0) (windowEnd / durationSeconds).toFloat() else 1f
+		val firstBucket = (startFrac * count).toInt().coerceIn(0, count - 1)
+		val lastBucket = (endFrac * count).toInt().coerceIn(firstBucket + 1, count)
+		val visibleBuckets = (lastBucket - firstBucket).coerceAtLeast(1)
+		val step = w / visibleBuckets
 
 		// Selection highlight behind the waveform.
 		if (drawStart != null && drawEnd != null && durationSeconds > 0.0) {
-			val left = secondsToX(min(drawStart, drawEnd), w)
-			val right = secondsToX(max(drawStart, drawEnd), w)
-			drawRect(
-				color = selectionFill,
-				topLeft = Offset(left, 0f),
-				size = Size((right - left).coerceAtLeast(2f), h),
-			)
-			drawLine(selectionEdge, Offset(left, 0f), Offset(left, h), strokeWidth = 4f, cap = StrokeCap.Round)
-			drawLine(selectionEdge, Offset(right, 0f), Offset(right, h), strokeWidth = 4f, cap = StrokeCap.Round)
+			val left = secondsToX(min(drawStart, drawEnd), w).coerceIn(0f, w)
+			val right = secondsToX(max(drawStart, drawEnd), w).coerceIn(0f, w)
+			if (right > 0f && left < w) {
+				drawRect(
+					color = selectionFill,
+					topLeft = Offset(left, 0f),
+					size = Size((right - left).coerceAtLeast(2f), h),
+				)
+				if (left in 0f..w) {
+					drawLine(selectionEdge, Offset(left, 0f), Offset(left, h), strokeWidth = 5f, cap = StrokeCap.Round)
+				}
+				if (right in 0f..w) {
+					drawLine(selectionEdge, Offset(right, 0f), Offset(right, h), strokeWidth = 5f, cap = StrokeCap.Round)
+				}
+			}
 		}
 
-		// Waveform bars.
-		for (i in peaks.indices) {
-			val amp = peaks[i].coerceIn(0f, 1f)
+		// Waveform bars for the visible window only.
+		for (i in 0 until visibleBuckets) {
+			val bucket = firstBucket + i
+			if (bucket !in peaks.indices) continue
+			val amp = peaks[bucket].coerceIn(0f, 1f)
 			val barH = max(2f, amp * (h * 0.86f))
 			val x = i * step + step / 2f
 			drawLine(
@@ -173,8 +195,8 @@ fun WaveformView(
 			)
 		}
 
-		// Playhead.
-		if (durationSeconds > 0.0) {
+		// Playhead (only when inside the visible window).
+		if (durationSeconds > 0.0 && positionSeconds in windowStart..windowEnd) {
 			val x = secondsToX(positionSeconds, w)
 			drawLine(
 				color = playhead,
@@ -183,10 +205,9 @@ fun WaveformView(
 				strokeWidth = 3f,
 				cap = StrokeCap.Round,
 			)
-			drawCircle(playhead, radius = 7f, center = Offset(x, mid))
+			drawCircle(playhead, radius = 8f, center = Offset(x, mid))
 		}
 
-		// Subtle frame.
 		drawRect(Color(0x22FFFFFF), style = Stroke(width = 2f))
 	}
 }
